@@ -39,6 +39,7 @@ When configured, use the **Cloud Save (Supabase)** section in the app to:
 ```bash
 npm install
 npm run dev
+npm run dev -- --host
 ```
 
 ## Build
