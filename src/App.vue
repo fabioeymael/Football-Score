@@ -250,7 +250,7 @@ const applySavedGame = (game) => {
 
 const saveGame = async () => {
   if (!supabase) {
-    dbFeedback.value = 'Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable cloud save.'
+    dbFeedback.value = 'Set the Supabase URL and anon key in your .env file to enable cloud save.'
     return
   }
 
