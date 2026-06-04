@@ -240,6 +240,13 @@ button:hover {
   font-size: 0.92rem;
 }
 
+.stat-text {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ink-muted);
+  align-self: center;
+}
+
 @media (max-width: 900px) {
   .two-col,
   .timeline-row,

@@ -32,8 +32,6 @@ const createScoreEvent = () => ({
   id: Date.now() + Math.random(),
   timestamp: '',
   team: 'home',
-  homeScore: 0,
-  awayScore: 0,
   note: '',
 })
 
@@ -73,8 +71,80 @@ const getPassAccuracy = (stats) => {
   return (clampToNonNegative(stats.correctPasses) / attempts) * 100
 }
 
+const parseTimestampToSeconds = (timestamp) => {
+  if (!timestamp) return Number.MAX_SAFE_INTEGER
+  const parts = timestamp.split(':').map((part) => Number(part))
+
+  if (parts.some((part) => Number.isNaN(part))) {
+    return Number.MAX_SAFE_INTEGER
+  }
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1]
+  }
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  }
+
+  return Number.MAX_SAFE_INTEGER
+}
+
 const bumpStat = (stats, key, delta) => {
   stats[key] = Math.max(0, clampToNonNegative(stats[key]) + delta)
+}
+
+const sortedEvents = computed(() => {
+  return scoreEvents.value
+    .map((event, index) => ({ ...event, _index: index }))
+    .sort((a, b) => {
+      const timeDiff = parseTimestampToSeconds(a.timestamp) - parseTimestampToSeconds(b.timestamp)
+      if (timeDiff !== 0) return timeDiff
+      return a._index - b._index
+    })
+})
+
+const timelineWithScore = computed(() => {
+  let homeRunningScore = 0
+  let awayRunningScore = 0
+
+  return sortedEvents.value.map((event) => {
+    if (event.team === 'home') {
+      homeRunningScore += 1
+    } else {
+      awayRunningScore += 1
+    }
+
+    return {
+      ...event,
+      homeScore: homeRunningScore,
+      awayScore: awayRunningScore,
+    }
+  })
+})
+
+const finalScore = computed(() => {
+  const lastEvent = timelineWithScore.value[timelineWithScore.value.length - 1]
+  return {
+    home: lastEvent ? lastEvent.homeScore : 0,
+    away: lastEvent ? lastEvent.awayScore : 0,
+  }
+})
+
+const hasScoreMismatch = computed(() => {
+  return (
+    clampToNonNegative(homeStats.score) !== finalScore.value.home ||
+    clampToNonNegative(awayStats.score) !== finalScore.value.away
+  )
+})
+
+const getEventScoreLabel = (eventId) => {
+  const orderedEvent = timelineWithScore.value.find((item) => item.id === eventId)
+  if (!orderedEvent) {
+    return `${homeTeam.value || 'Alliance'} 0 - 0 ${awayTeam.value || 'Opponent'}`
+  }
+
+  return `${homeTeam.value || 'Alliance'} ${orderedEvent.homeScore} - ${orderedEvent.awayScore} ${awayTeam.value || 'Opponent'}`
 }
 
 const resetForm = () => {
@@ -86,46 +156,6 @@ const resetForm = () => {
   Object.assign(awayStats, createOpponentStats())
   scoreEvents.value = [createScoreEvent()]
   dbFeedback.value = 'Form reset. Ready for a new game.'
-}
-
-const buildPayload = () => ({
-  game_datetime: gameDateTime.value || null,
-  home_team: homeTeam.value || 'Alliance',
-  away_team: awayTeam.value || 'Opponent',
-  home_stats: {
-    score: clampToNonNegative(homeStats.score),
-    shotsOnTarget: clampToNonNegative(homeStats.shotsOnTarget),
-    shotsMissed: clampToNonNegative(homeStats.shotsMissed),
-    correctPasses: clampToNonNegative(homeStats.correctPasses),
-    missedPasses: clampToNonNegative(homeStats.missedPasses),
-    fouls: clampToNonNegative(homeStats.fouls),
-  },
-  away_stats: {
-    score: clampToNonNegative(awayStats.score),
-    shotsOnTarget: clampToNonNegative(awayStats.shotsOnTarget),
-    shotsMissed: clampToNonNegative(awayStats.shotsMissed),
-    fouls: clampToNonNegative(awayStats.fouls),
-  },
-  score_events: scoreEvents.value.map((event) => ({
-    timestamp: event.timestamp || '',
-    team: event.team === 'away' ? 'away' : 'home',
-    homeScore: clampToNonNegative(event.homeScore),
-    awayScore: clampToNonNegative(event.awayScore),
-    note: event.note || '',
-  })),
-  youtube_summary: youtubeSummary.value,
-})
-
-const addScoreEvent = () => {
-  scoreEvents.value.push({
-    ...createScoreEvent(),
-    homeScore: clampToNonNegative(homeStats.score),
-    awayScore: clampToNonNegative(awayStats.score),
-  })
-}
-
-const removeScoreEvent = (id) => {
-  scoreEvents.value = scoreEvents.value.filter((event) => event.id !== id)
 }
 
 const buildAllianceLine = (name, stats) => {
@@ -158,10 +188,6 @@ const buildOpponentLine = (name, stats) => {
   ]
 }
 
-const sortedEvents = computed(() => {
-  return [...scoreEvents.value].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-})
-
 const youtubeSummary = computed(() => {
   const title = `${homeTeam.value || 'Alliance'} vs ${awayTeam.value || 'Opponent'}`
   const header = [
@@ -177,12 +203,12 @@ const youtubeSummary = computed(() => {
     'Goal Timeline',
   ]
 
-  const timeline = sortedEvents.value.length
-    ? sortedEvents.value.map((event) => {
+  const timeline = timelineWithScore.value.length
+    ? timelineWithScore.value.map((event) => {
         const teamName = event.team === 'home' ? homeTeam.value || 'Alliance' : awayTeam.value || 'Opponent'
         const timestamp = event.timestamp || '00:00'
         const note = event.note ? ` | ${event.note}` : ''
-        return `${timestamp} - ${teamName} (${clampToNonNegative(event.homeScore)}-${clampToNonNegative(event.awayScore)})${note}`
+        return `${timestamp} - ${teamName} (${event.homeScore}-${event.awayScore})${note}`
       })
     : ['No goals recorded yet.']
 
@@ -200,6 +226,40 @@ const copySummary = async () => {
   setTimeout(() => {
     copyFeedback.value = ''
   }, 2500)
+}
+
+const buildPayload = () => ({
+  game_datetime: gameDateTime.value || null,
+  home_team: homeTeam.value || 'Alliance',
+  away_team: awayTeam.value || 'Opponent',
+  home_stats: {
+    score: clampToNonNegative(homeStats.score),
+    shotsOnTarget: clampToNonNegative(homeStats.shotsOnTarget),
+    shotsMissed: clampToNonNegative(homeStats.shotsMissed),
+    correctPasses: clampToNonNegative(homeStats.correctPasses),
+    missedPasses: clampToNonNegative(homeStats.missedPasses),
+    fouls: clampToNonNegative(homeStats.fouls),
+  },
+  away_stats: {
+    score: clampToNonNegative(awayStats.score),
+    shotsOnTarget: clampToNonNegative(awayStats.shotsOnTarget),
+    shotsMissed: clampToNonNegative(awayStats.shotsMissed),
+    fouls: clampToNonNegative(awayStats.fouls),
+  },
+  score_events: scoreEvents.value.map((event) => ({
+    timestamp: event.timestamp || '',
+    team: event.team === 'away' ? 'away' : 'home',
+    note: event.note || '',
+  })),
+  youtube_summary: youtubeSummary.value,
+})
+
+const addScoreEvent = () => {
+  scoreEvents.value.push(createScoreEvent())
+}
+
+const removeScoreEvent = (id) => {
+  scoreEvents.value = scoreEvents.value.filter((event) => event.id !== id)
 }
 
 const loadSavedGames = async () => {
@@ -239,8 +299,6 @@ const applySavedGame = (game) => {
         id: Date.now() + index,
         timestamp: event.timestamp || '',
         team: event.team === 'away' ? 'away' : 'home',
-        homeScore: clampToNonNegative(event.homeScore),
-        awayScore: clampToNonNegative(event.awayScore),
         note: event.note || '',
       }))
     : [createScoreEvent()]
@@ -373,7 +431,14 @@ onMounted(() => {
         <article class="team-box">
           <h3>{{ homeTeam || 'Alliance' }}</h3>
           <div class="stat-grid">
-            <label>Score <input v-model.number="homeStats.score" min="0" type="number" /></label>
+            <label>
+              Score
+              <div class="counter">
+                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'score', -1)">-</button>
+                <input :value="homeStats.score" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'score', 1)">+</button>
+              </div>
+            </label>
             <label>
               Shots On Target
               <div class="counter">
@@ -390,8 +455,6 @@ onMounted(() => {
                 <button type="button" class="small secondary" @click="bumpStat(homeStats, 'shotsMissed', 1)">+</button>
               </div>
             </label>
-            <label>Shot Attempts <input :value="getShotAttempts(homeStats)" disabled type="number" /></label>
-            <label>Shooting Accuracy (%) <input :value="getShotAccuracy(homeStats).toFixed(1)" disabled type="text" /></label>
             <label>
               Correct Passes
               <div class="counter">
@@ -408,16 +471,32 @@ onMounted(() => {
                 <button type="button" class="small secondary" @click="bumpStat(homeStats, 'missedPasses', 1)">+</button>
               </div>
             </label>
-            <label>Pass Attempts <input :value="getPassAttempts(homeStats)" disabled type="number" /></label>
-            <label>Pass Accuracy (%) <input :value="getPassAccuracy(homeStats).toFixed(1)" disabled type="text" /></label>
-            <label>Fouls <input v-model.number="homeStats.fouls" min="0" type="number" /></label>
+            <label>
+              Fouls
+              <div class="counter">
+                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'fouls', -1)">-</button>
+                <input :value="homeStats.fouls" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'fouls', 1)">+</button>
+              </div>
+            </label>
+            <p class="stat-text">Shot Attempts: {{ getShotAttempts(homeStats) }}</p>
+            <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(homeStats).toFixed(1) }}%</p>
+            <p class="stat-text">Pass Attempts: {{ getPassAttempts(homeStats) }}</p>
+            <p class="stat-text">Pass Accuracy: {{ getPassAccuracy(homeStats).toFixed(1) }}%</p>
           </div>
         </article>
 
         <article class="team-box">
           <h3>{{ awayTeam || 'Opponent' }}</h3>
           <div class="stat-grid">
-            <label>Score <input v-model.number="awayStats.score" min="0" type="number" /></label>
+            <label>
+              Score
+              <div class="counter">
+                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'score', -1)">-</button>
+                <input :value="awayStats.score" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'score', 1)">+</button>
+              </div>
+            </label>
             <label>
               Shots On Target
               <div class="counter">
@@ -434,9 +513,16 @@ onMounted(() => {
                 <button type="button" class="small secondary" @click="bumpStat(awayStats, 'shotsMissed', 1)">+</button>
               </div>
             </label>
-            <label>Shot Attempts <input :value="getShotAttempts(awayStats)" disabled type="number" /></label>
-            <label>Shooting Accuracy (%) <input :value="getShotAccuracy(awayStats).toFixed(1)" disabled type="text" /></label>
-            <label>Fouls <input v-model.number="awayStats.fouls" min="0" type="number" /></label>
+            <label>
+              Fouls
+              <div class="counter">
+                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'fouls', -1)">-</button>
+                <input :value="awayStats.fouls" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'fouls', 1)">+</button>
+              </div>
+            </label>
+            <p class="stat-text">Shot Attempts: {{ getShotAttempts(awayStats) }}</p>
+            <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(awayStats).toFixed(1) }}%</p>
           </div>
         </article>
       </div>
@@ -447,6 +533,13 @@ onMounted(() => {
         <h2>Score Timeline (YouTube Timestamps)</h2>
         <button type="button" class="secondary" @click="addScoreEvent">Add Timestamp</button>
       </div>
+      <p class="hint" v-if="hasScoreMismatch">
+        Score check: Team counters show {{ homeTeam || 'Alliance' }} {{ homeStats.score }} - {{ awayStats.score }} {{ awayTeam || 'Opponent' }},
+        but timeline events show {{ homeTeam || 'Alliance' }} {{ finalScore.home }} - {{ finalScore.away }} {{ awayTeam || 'Opponent' }}.
+      </p>
+      <p class="hint" v-else>
+        Score check: Team counters match timeline ({{ homeTeam || 'Alliance' }} {{ finalScore.home }} - {{ finalScore.away }} {{ awayTeam || 'Opponent' }}).
+      </p>
 
       <div class="timeline-wrap">
         <article v-for="event in scoreEvents" :key="event.id" class="timeline-row">
@@ -462,12 +555,8 @@ onMounted(() => {
             </select>
           </label>
           <label>
-            Score After Goal (Alliance)
-            <input v-model.number="event.homeScore" min="0" type="number" />
-          </label>
-          <label>
-            Score After Goal (Opponent)
-            <input v-model.number="event.awayScore" min="0" type="number" />
+            Score After Goal (Auto)
+            <input :value="getEventScoreLabel(event.id)" disabled type="text" />
           </label>
           <label>
             Note (optional)
