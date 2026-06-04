@@ -308,7 +308,7 @@ onMounted(() => {
       <p class="eyebrow">Match Analytics</p>
       <h1>Football Match Stat Tracker</h1>
       <p class="subtitle">
-        Track simple stats while reviewing YouTube videos, add score timestamps, and export a
+        Track simple stats while reviewing YouTube videos. Add score timestamps, and export a
         ready-to-paste match report.
       </p>
     </section>
