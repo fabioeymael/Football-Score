@@ -545,7 +545,7 @@ onMounted(() => {
         <article v-for="event in scoreEvents" :key="event.id" class="timeline-row">
           <label>
             Video Time (mm:ss)
-            <input v-model="event.timestamp" placeholder="12:43" type="text" />
+            <input v-model="event.timestamp" placeholder="00:00" type="text" />
           </label>
           <label>
             Team Scored
