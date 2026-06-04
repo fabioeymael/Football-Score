@@ -234,9 +234,10 @@ const youtubeSummary = computed(() => {
           event.team === 'myTeam'
             ? myTeamName.value || 'My team'
             : opponentTeamName.value || 'Opponent'
+        const teamScore = event.team === 'myTeam' ? event.myTeamScore : event.opponentScore
         const timestamp = event.timestamp || '00:00'
         const note = event.note ? ` | ${event.note}` : ''
-        return `${timestamp} - ${teamName} (${event.myTeamScore}-${event.opponentScore})${note}`
+        return `${timestamp} - ${teamName} (${teamScore})${note}`
       })
     : ['No goals recorded yet.']
 
