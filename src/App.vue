@@ -3,8 +3,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { supabase } from './lib/supabase'
 
 const gameDateTime = ref('')
-const homeTeam = ref('Alliance')
-const awayTeam = ref('Opponent')
+const myTeamName = ref('')
+const opponentTeamName = ref('')
 const copyFeedback = ref('')
 const dbFeedback = ref('')
 const isSaving = ref(false)
@@ -12,7 +12,7 @@ const isLoadingGames = ref(false)
 const currentGameId = ref(null)
 const savedGames = ref([])
 
-const createAllianceStats = () => ({
+const createMyTeamStats = () => ({
   score: 0,
   shotsOnTarget: 0,
   shotsMissed: 0,
@@ -31,12 +31,12 @@ const createOpponentStats = () => ({
 const createScoreEvent = () => ({
   id: Date.now() + Math.random(),
   timestamp: '',
-  team: 'home',
+  team: 'myTeam',
   note: '',
 })
 
-const homeStats = reactive(createAllianceStats())
-const awayStats = reactive(createOpponentStats())
+const myTeamStats = reactive(createMyTeamStats())
+const opponentStats = reactive(createOpponentStats())
 const scoreEvents = ref([createScoreEvent()])
 
 const isSupabaseConfigured = computed(() => Boolean(supabase))
@@ -94,6 +94,31 @@ const bumpStat = (stats, key, delta) => {
   stats[key] = Math.max(0, clampToNonNegative(stats[key]) + delta)
 }
 
+const applyVideoTimeMask = (event, inputValue) => {
+  const digits = String(inputValue || '')
+    .replace(/\D/g, '')
+    .slice(0, 4)
+
+  if (!digits) {
+    event.timestamp = ''
+    return
+  }
+
+  if (digits.length <= 2) {
+    event.timestamp = digits
+    return
+  }
+
+  const minutes = digits.slice(0, 2)
+  let seconds = digits.slice(2)
+
+  if (seconds.length === 2) {
+    seconds = String(Math.min(59, Number(seconds))).padStart(2, '0')
+  }
+
+  event.timestamp = `${minutes}:${seconds}`
+}
+
 const sortedEvents = computed(() => {
   return scoreEvents.value
     .map((event, index) => ({ ...event, _index: index }))
@@ -105,20 +130,20 @@ const sortedEvents = computed(() => {
 })
 
 const timelineWithScore = computed(() => {
-  let homeRunningScore = 0
-  let awayRunningScore = 0
+  let myTeamRunningScore = 0
+  let opponentRunningScore = 0
 
   return sortedEvents.value.map((event) => {
-    if (event.team === 'home') {
-      homeRunningScore += 1
+    if (event.team === 'myTeam') {
+      myTeamRunningScore += 1
     } else {
-      awayRunningScore += 1
+      opponentRunningScore += 1
     }
 
     return {
       ...event,
-      homeScore: homeRunningScore,
-      awayScore: awayRunningScore,
+      myTeamScore: myTeamRunningScore,
+      opponentScore: opponentRunningScore,
     }
   })
 })
@@ -126,39 +151,39 @@ const timelineWithScore = computed(() => {
 const finalScore = computed(() => {
   const lastEvent = timelineWithScore.value[timelineWithScore.value.length - 1]
   return {
-    home: lastEvent ? lastEvent.homeScore : 0,
-    away: lastEvent ? lastEvent.awayScore : 0,
+    myTeam: lastEvent ? lastEvent.myTeamScore : 0,
+    opponent: lastEvent ? lastEvent.opponentScore : 0,
   }
 })
 
 const hasScoreMismatch = computed(() => {
   return (
-    clampToNonNegative(homeStats.score) !== finalScore.value.home ||
-    clampToNonNegative(awayStats.score) !== finalScore.value.away
+    clampToNonNegative(myTeamStats.score) !== finalScore.value.myTeam ||
+    clampToNonNegative(opponentStats.score) !== finalScore.value.opponent
   )
 })
 
 const getEventScoreLabel = (eventId) => {
   const orderedEvent = timelineWithScore.value.find((item) => item.id === eventId)
   if (!orderedEvent) {
-    return `${homeTeam.value || 'Alliance'} 0 - 0 ${awayTeam.value || 'Opponent'}`
+    return `${myTeamName.value || 'My team'} 0 - 0 ${opponentTeamName.value || 'Opponent'}`
   }
 
-  return `${homeTeam.value || 'Alliance'} ${orderedEvent.homeScore} - ${orderedEvent.awayScore} ${awayTeam.value || 'Opponent'}`
+  return `${myTeamName.value || 'My team'} ${orderedEvent.myTeamScore} - ${orderedEvent.opponentScore} ${opponentTeamName.value || 'Opponent'}`
 }
 
 const resetForm = () => {
   gameDateTime.value = ''
-  homeTeam.value = 'Alliance'
-  awayTeam.value = 'Opponent'
+  myTeamName.value = ''
+  opponentTeamName.value = ''
   currentGameId.value = null
-  Object.assign(homeStats, createAllianceStats())
-  Object.assign(awayStats, createOpponentStats())
+  Object.assign(myTeamStats, createMyTeamStats())
+  Object.assign(opponentStats, createOpponentStats())
   scoreEvents.value = [createScoreEvent()]
   dbFeedback.value = 'Form reset. Ready for a new game.'
 }
 
-const buildAllianceLine = (name, stats) => {
+const buildMyTeamLine = (name, stats) => {
   const shotAccuracy = getShotAccuracy(stats).toFixed(1)
   const passAccuracy = getPassAccuracy(stats).toFixed(1)
   return [
@@ -189,26 +214,29 @@ const buildOpponentLine = (name, stats) => {
 }
 
 const youtubeSummary = computed(() => {
-  const title = `${homeTeam.value || 'Alliance'} vs ${awayTeam.value || 'Opponent'}`
+  const title = `${myTeamName.value || 'My team'} vs ${opponentTeamName.value || 'Opponent'}`
   const header = [
     `Match: ${title}`,
     `Kickoff: ${formatDateTime(gameDateTime.value)}`,
-    `Final Score: ${homeTeam.value || 'Alliance'} ${clampToNonNegative(homeStats.score)} - ${clampToNonNegative(awayStats.score)} ${awayTeam.value || 'Opponent'}`,
+    `Final Score: ${myTeamName.value || 'My team'} ${clampToNonNegative(myTeamStats.score)} - ${clampToNonNegative(opponentStats.score)} ${opponentTeamName.value || 'Opponent'}`,
     '',
     'Team Stats',
-    ...buildAllianceLine(homeTeam.value || 'Alliance', homeStats),
+    ...buildMyTeamLine(myTeamName.value || 'My team', myTeamStats),
     '',
-    ...buildOpponentLine(awayTeam.value || 'Opponent', awayStats),
+    ...buildOpponentLine(opponentTeamName.value || 'Opponent', opponentStats),
     '',
     'Goal Timeline',
   ]
 
   const timeline = timelineWithScore.value.length
     ? timelineWithScore.value.map((event) => {
-        const teamName = event.team === 'home' ? homeTeam.value || 'Alliance' : awayTeam.value || 'Opponent'
+        const teamName =
+          event.team === 'myTeam'
+            ? myTeamName.value || 'My team'
+            : opponentTeamName.value || 'Opponent'
         const timestamp = event.timestamp || '00:00'
         const note = event.note ? ` | ${event.note}` : ''
-        return `${timestamp} - ${teamName} (${event.homeScore}-${event.awayScore})${note}`
+        return `${timestamp} - ${teamName} (${event.myTeamScore}-${event.opponentScore})${note}`
       })
     : ['No goals recorded yet.']
 
@@ -230,25 +258,25 @@ const copySummary = async () => {
 
 const buildPayload = () => ({
   game_datetime: gameDateTime.value || null,
-  home_team: homeTeam.value || 'Alliance',
-  away_team: awayTeam.value || 'Opponent',
+  home_team: myTeamName.value || 'My team',
+  away_team: opponentTeamName.value || 'Opponent',
   home_stats: {
-    score: clampToNonNegative(homeStats.score),
-    shotsOnTarget: clampToNonNegative(homeStats.shotsOnTarget),
-    shotsMissed: clampToNonNegative(homeStats.shotsMissed),
-    correctPasses: clampToNonNegative(homeStats.correctPasses),
-    missedPasses: clampToNonNegative(homeStats.missedPasses),
-    fouls: clampToNonNegative(homeStats.fouls),
+    score: clampToNonNegative(myTeamStats.score),
+    shotsOnTarget: clampToNonNegative(myTeamStats.shotsOnTarget),
+    shotsMissed: clampToNonNegative(myTeamStats.shotsMissed),
+    correctPasses: clampToNonNegative(myTeamStats.correctPasses),
+    missedPasses: clampToNonNegative(myTeamStats.missedPasses),
+    fouls: clampToNonNegative(myTeamStats.fouls),
   },
   away_stats: {
-    score: clampToNonNegative(awayStats.score),
-    shotsOnTarget: clampToNonNegative(awayStats.shotsOnTarget),
-    shotsMissed: clampToNonNegative(awayStats.shotsMissed),
-    fouls: clampToNonNegative(awayStats.fouls),
+    score: clampToNonNegative(opponentStats.score),
+    shotsOnTarget: clampToNonNegative(opponentStats.shotsOnTarget),
+    shotsMissed: clampToNonNegative(opponentStats.shotsMissed),
+    fouls: clampToNonNegative(opponentStats.fouls),
   },
   score_events: scoreEvents.value.map((event) => ({
     timestamp: event.timestamp || '',
-    team: event.team === 'away' ? 'away' : 'home',
+    team: event.team === 'opponent' ? 'away' : 'home',
     note: event.note || '',
   })),
   youtube_summary: youtubeSummary.value,
@@ -287,18 +315,18 @@ const loadSavedGames = async () => {
 const applySavedGame = (game) => {
   currentGameId.value = game.id
   gameDateTime.value = game.game_datetime ? game.game_datetime.slice(0, 16) : ''
-  homeTeam.value = game.home_team || 'Alliance'
-  awayTeam.value = game.away_team || 'Opponent'
+  myTeamName.value = game.home_team || 'My team'
+  opponentTeamName.value = game.away_team || 'Opponent'
 
-  Object.assign(homeStats, createAllianceStats(), game.home_stats || {})
-  Object.assign(awayStats, createOpponentStats(), game.away_stats || {})
+  Object.assign(myTeamStats, createMyTeamStats(), game.home_stats || {})
+  Object.assign(opponentStats, createOpponentStats(), game.away_stats || {})
 
   const parsedEvents = Array.isArray(game.score_events) ? game.score_events : []
   scoreEvents.value = parsedEvents.length
     ? parsedEvents.map((event, index) => ({
         id: Date.now() + index,
         timestamp: event.timestamp || '',
-        team: event.team === 'away' ? 'away' : 'home',
+        team: event.team === 'away' ? 'opponent' : 'myTeam',
         note: event.note || '',
       }))
     : [createScoreEvent()]
@@ -380,12 +408,12 @@ onMounted(() => {
         </label>
         <div></div>
         <label>
-          Alliance Team
-          <input v-model="homeTeam" type="text" placeholder="Alliance" />
+          My Team
+          <input v-model="myTeamName" type="text" placeholder="My team" />
         </label>
         <label>
           Opponent Team
-          <input v-model="awayTeam" type="text" placeholder="Opponent" />
+          <input v-model="opponentTeamName" type="text" placeholder="Opponent" />
         </label>
       </div>
     </section>
@@ -429,100 +457,100 @@ onMounted(() => {
 
       <div class="grid two-col">
         <article class="team-box">
-          <h3>{{ homeTeam || 'Alliance' }}</h3>
+          <h3>{{ myTeamName || 'My team' }}</h3>
           <div class="stat-grid">
             <label>
               Score
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'score', -1)">-</button>
-                <input :value="homeStats.score" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'score', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'score', -1)">-</button>
+                <input :value="myTeamStats.score" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'score', 1)">+</button>
               </div>
             </label>
             <label>
               Shots On Target
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'shotsOnTarget', -1)">-</button>
-                <input :value="homeStats.shotsOnTarget" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'shotsOnTarget', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'shotsOnTarget', -1)">-</button>
+                <input :value="myTeamStats.shotsOnTarget" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'shotsOnTarget', 1)">+</button>
               </div>
             </label>
             <label>
               Shots Missed
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'shotsMissed', -1)">-</button>
-                <input :value="homeStats.shotsMissed" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'shotsMissed', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'shotsMissed', -1)">-</button>
+                <input :value="myTeamStats.shotsMissed" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'shotsMissed', 1)">+</button>
               </div>
             </label>
             <label>
               Correct Passes
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'correctPasses', -1)">-</button>
-                <input :value="homeStats.correctPasses" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'correctPasses', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'correctPasses', -1)">-</button>
+                <input :value="myTeamStats.correctPasses" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'correctPasses', 1)">+</button>
               </div>
             </label>
             <label>
               Missed Passes
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'missedPasses', -1)">-</button>
-                <input :value="homeStats.missedPasses" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'missedPasses', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'missedPasses', -1)">-</button>
+                <input :value="myTeamStats.missedPasses" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'missedPasses', 1)">+</button>
               </div>
             </label>
             <label>
               Fouls
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'fouls', -1)">-</button>
-                <input :value="homeStats.fouls" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(homeStats, 'fouls', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'fouls', -1)">-</button>
+                <input :value="myTeamStats.fouls" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'fouls', 1)">+</button>
               </div>
             </label>
-            <p class="stat-text">Shot Attempts: {{ getShotAttempts(homeStats) }}</p>
-            <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(homeStats).toFixed(1) }}%</p>
-            <p class="stat-text">Pass Attempts: {{ getPassAttempts(homeStats) }}</p>
-            <p class="stat-text">Pass Accuracy: {{ getPassAccuracy(homeStats).toFixed(1) }}%</p>
+            <p class="stat-text">Shot Attempts: {{ getShotAttempts(myTeamStats) }}</p>
+            <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(myTeamStats).toFixed(1) }}%</p>
+            <p class="stat-text">Pass Attempts: {{ getPassAttempts(myTeamStats) }}</p>
+            <p class="stat-text">Pass Accuracy: {{ getPassAccuracy(myTeamStats).toFixed(1) }}%</p>
           </div>
         </article>
 
         <article class="team-box">
-          <h3>{{ awayTeam || 'Opponent' }}</h3>
+          <h3>{{ opponentTeamName || 'Opponent' }}</h3>
           <div class="stat-grid">
             <label>
               Score
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'score', -1)">-</button>
-                <input :value="awayStats.score" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'score', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'score', -1)">-</button>
+                <input :value="opponentStats.score" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'score', 1)">+</button>
               </div>
             </label>
             <label>
               Shots On Target
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'shotsOnTarget', -1)">-</button>
-                <input :value="awayStats.shotsOnTarget" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'shotsOnTarget', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'shotsOnTarget', -1)">-</button>
+                <input :value="opponentStats.shotsOnTarget" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'shotsOnTarget', 1)">+</button>
               </div>
             </label>
             <label>
               Shots Missed
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'shotsMissed', -1)">-</button>
-                <input :value="awayStats.shotsMissed" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'shotsMissed', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'shotsMissed', -1)">-</button>
+                <input :value="opponentStats.shotsMissed" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'shotsMissed', 1)">+</button>
               </div>
             </label>
             <label>
               Fouls
               <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'fouls', -1)">-</button>
-                <input :value="awayStats.fouls" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(awayStats, 'fouls', 1)">+</button>
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'fouls', -1)">-</button>
+                <input :value="opponentStats.fouls" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'fouls', 1)">+</button>
               </div>
             </label>
-            <p class="stat-text">Shot Attempts: {{ getShotAttempts(awayStats) }}</p>
-            <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(awayStats).toFixed(1) }}%</p>
+            <p class="stat-text">Shot Attempts: {{ getShotAttempts(opponentStats) }}</p>
+            <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(opponentStats).toFixed(1) }}%</p>
           </div>
         </article>
       </div>
@@ -534,24 +562,31 @@ onMounted(() => {
         <button type="button" class="secondary" @click="addScoreEvent">Add Timestamp</button>
       </div>
       <p class="hint" v-if="hasScoreMismatch">
-        Score check: Team counters show {{ homeTeam || 'Alliance' }} {{ homeStats.score }} - {{ awayStats.score }} {{ awayTeam || 'Opponent' }},
-        but timeline events show {{ homeTeam || 'Alliance' }} {{ finalScore.home }} - {{ finalScore.away }} {{ awayTeam || 'Opponent' }}.
+        Score check: Team counters show {{ myTeamName || 'My team' }} {{ myTeamStats.score }} - {{ opponentStats.score }} {{ opponentTeamName || 'Opponent' }},
+        but timeline events show {{ myTeamName || 'My team' }} {{ finalScore.myTeam }} - {{ finalScore.opponent }} {{ opponentTeamName || 'Opponent' }}.
       </p>
       <p class="hint" v-else>
-        Score check: Team counters match timeline ({{ homeTeam || 'Alliance' }} {{ finalScore.home }} - {{ finalScore.away }} {{ awayTeam || 'Opponent' }}).
+        Score check: Team counters match timeline ({{ myTeamName || 'My team' }} {{ finalScore.myTeam }} - {{ finalScore.opponent }} {{ opponentTeamName || 'Opponent' }}).
       </p>
 
       <div class="timeline-wrap">
         <article v-for="event in scoreEvents" :key="event.id" class="timeline-row">
           <label>
             Video Time (mm:ss)
-            <input v-model="event.timestamp" placeholder="00:00" type="text" />
+            <input
+              :value="event.timestamp"
+              @input="applyVideoTimeMask(event, $event.target.value)"
+              inputmode="numeric"
+              maxlength="5"
+              placeholder="00:00"
+              type="text"
+            />
           </label>
           <label>
             Team Scored
             <select v-model="event.team">
-              <option value="home">{{ homeTeam || 'Alliance' }}</option>
-              <option value="away">{{ awayTeam || 'Opponent' }}</option>
+              <option value="myTeam">{{ myTeamName || 'My team' }}</option>
+              <option value="opponent">{{ opponentTeamName || 'Opponent' }}</option>
             </select>
           </label>
           <label>
