@@ -11,13 +11,17 @@ const isSaving = ref(false)
 const isLoadingGames = ref(false)
 const currentGameId = ref(null)
 const savedGames = ref([])
+const isConfirmModalOpen = ref(false)
+const confirmTitle = ref('')
+const confirmMessage = ref('')
+const confirmActionLabel = ref('')
+const confirmActionClass = ref('danger')
+const pendingConfirmAction = ref(null)
 
 const createMyTeamStats = () => ({
   score: 0,
   shotsOnTarget: 0,
   shotsMissed: 0,
-  correctPasses: 0,
-  missedPasses: 0,
   fouls: 0,
 })
 
@@ -41,14 +45,49 @@ const scoreEvents = ref([createScoreEvent()])
 
 const isSupabaseConfigured = computed(() => Boolean(supabase))
 
+const parseDateTimeAsEntered = (value) => {
+  if (!value) return null
+
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/)
+  if (!match) return null
+
+  const [, year, month, day, hour, minute] = match
+  return new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    0,
+  )
+}
+
 const formatDateTime = (value) => {
   if (!value) return 'Not provided'
-  return new Date(value).toLocaleString()
+  const parsed = parseDateTimeAsEntered(value)
+  if (!parsed) return 'Not provided'
+  return parsed.toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
 }
 
 const formatShortDateTime = (value) => {
   if (!value) return 'No kickoff time'
-  return new Date(value).toLocaleString()
+  const parsed = parseDateTimeAsEntered(value)
+  if (!parsed) return 'No kickoff time'
+  return parsed.toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
 }
 
 const clampToNonNegative = (value) => Math.max(0, Number(value) || 0)
@@ -56,20 +95,25 @@ const clampToNonNegative = (value) => Math.max(0, Number(value) || 0)
 const getShotAttempts = (stats) =>
   clampToNonNegative(stats.shotsOnTarget) + clampToNonNegative(stats.shotsMissed)
 
-const getPassAttempts = (stats) =>
-  clampToNonNegative(stats.correctPasses) + clampToNonNegative(stats.missedPasses)
-
 const getShotAccuracy = (stats) => {
   const attempts = getShotAttempts(stats)
   if (!attempts) return 0
   return (clampToNonNegative(stats.shotsOnTarget) / attempts) * 100
 }
 
-const getPassAccuracy = (stats) => {
-  const attempts = getPassAttempts(stats)
-  if (!attempts) return 0
-  return (clampToNonNegative(stats.correctPasses) / attempts) * 100
-}
+const sanitizeMyTeamStats = (stats = {}) => ({
+  score: clampToNonNegative(stats.score),
+  shotsOnTarget: clampToNonNegative(stats.shotsOnTarget),
+  shotsMissed: clampToNonNegative(stats.shotsMissed),
+  fouls: clampToNonNegative(stats.fouls),
+})
+
+const sanitizeOpponentStats = (stats = {}) => ({
+  score: clampToNonNegative(stats.score),
+  shotsOnTarget: clampToNonNegative(stats.shotsOnTarget),
+  shotsMissed: clampToNonNegative(stats.shotsMissed),
+  fouls: clampToNonNegative(stats.fouls),
+})
 
 const parseTimestampToSeconds = (timestamp) => {
   if (!timestamp) return Number.MAX_SAFE_INTEGER
@@ -183,19 +227,49 @@ const resetForm = () => {
   dbFeedback.value = 'Form reset. Ready for a new game.'
 }
 
+const openConfirmModal = ({ title, message, actionLabel, actionClass = 'danger', onConfirm }) => {
+  confirmTitle.value = title
+  confirmMessage.value = message
+  confirmActionLabel.value = actionLabel
+  confirmActionClass.value = actionClass
+  pendingConfirmAction.value = onConfirm
+  isConfirmModalOpen.value = true
+}
+
+const closeConfirmModal = () => {
+  isConfirmModalOpen.value = false
+  pendingConfirmAction.value = null
+}
+
+const confirmModalAction = async () => {
+  if (!pendingConfirmAction.value) {
+    closeConfirmModal()
+    return
+  }
+
+  await pendingConfirmAction.value()
+  closeConfirmModal()
+}
+
+const requestClearForm = () => {
+  openConfirmModal({
+    title: 'Clear current form?',
+    message: 'This will remove the current unsaved values from the form.',
+    actionLabel: 'Clear Form',
+    actionClass: 'danger',
+    onConfirm: () => resetForm(),
+  })
+}
+
 const buildMyTeamLine = (name, stats) => {
   const shotAccuracy = getShotAccuracy(stats).toFixed(1)
-  const passAccuracy = getPassAccuracy(stats).toFixed(1)
   return [
     `${name}:`,
     `- Goals: ${clampToNonNegative(stats.score)}`,
     `- Shot Attempts: ${getShotAttempts(stats)}`,
     `- Shots On Target: ${clampToNonNegative(stats.shotsOnTarget)}`,
-    `- Shots Missed: ${clampToNonNegative(stats.shotsMissed)} (${(100 - shotAccuracy).toFixed(1)}%)`,
+    `- Shots Missed: ${clampToNonNegative(stats.shotsMissed)}`,
     `- Shooting Accuracy: ${shotAccuracy}%`,
-    `- Correct Passes: ${clampToNonNegative(stats.correctPasses)}`,
-    `- Missed Passes: ${clampToNonNegative(stats.missedPasses)}`,
-    `- Pass Accuracy: ${passAccuracy}%`,
     `- Fouls: ${clampToNonNegative(stats.fouls)}`,
   ]
 }
@@ -207,7 +281,7 @@ const buildOpponentLine = (name, stats) => {
     `- Goals: ${clampToNonNegative(stats.score)}`,
     `- Shot Attempts: ${getShotAttempts(stats)}`,
     `- Shots On Target: ${clampToNonNegative(stats.shotsOnTarget)}`,
-    `- Shots Missed: ${clampToNonNegative(stats.shotsMissed)} (${(100 - shotAccuracy).toFixed(1)}%)`,
+    `- Shots Missed: ${clampToNonNegative(stats.shotsMissed)}`,
     `- Shooting Accuracy: ${shotAccuracy}%`,
     `- Fouls: ${clampToNonNegative(stats.fouls)}`,
   ]
@@ -215,19 +289,6 @@ const buildOpponentLine = (name, stats) => {
 
 const youtubeSummary = computed(() => {
   const title = `${myTeamName.value || 'My team'} vs ${opponentTeamName.value || 'Opponent'}`
-  const header = [
-    `Match: ${title}`,
-    `Kickoff: ${formatDateTime(gameDateTime.value)}`,
-    `Final Score: ${myTeamName.value || 'My team'} ${clampToNonNegative(myTeamStats.score)} - ${clampToNonNegative(opponentStats.score)} ${opponentTeamName.value || 'Opponent'}`,
-    '',
-    'Team Stats',
-    ...buildMyTeamLine(myTeamName.value || 'My team', myTeamStats),
-    '',
-    ...buildOpponentLine(opponentTeamName.value || 'Opponent', opponentStats),
-    '',
-    'Goal Timeline',
-  ]
-
   const timeline = timelineWithScore.value.length
     ? timelineWithScore.value.map((event) => {
         const teamName =
@@ -241,7 +302,21 @@ const youtubeSummary = computed(() => {
       })
     : ['No goals recorded yet.']
 
-  return [...header, ...timeline].join('\n')
+  const header = [
+    `Match: ${title}`,
+    `Kickoff: ${formatDateTime(gameDateTime.value)}`,
+    `Final Score: ${myTeamName.value || 'My team'} ${clampToNonNegative(myTeamStats.score)} - ${clampToNonNegative(opponentStats.score)} ${opponentTeamName.value || 'Opponent'}`,
+    '',
+    'Goal Timeline',
+    ...timeline,
+    '',
+    'Team Stats',
+    ...buildMyTeamLine(myTeamName.value || 'My team', myTeamStats),
+    '',
+    ...buildOpponentLine(opponentTeamName.value || 'Opponent', opponentStats),
+  ]
+
+  return header.join('\n')
 })
 
 const copySummary = async () => {
@@ -265,8 +340,6 @@ const buildPayload = () => ({
     score: clampToNonNegative(myTeamStats.score),
     shotsOnTarget: clampToNonNegative(myTeamStats.shotsOnTarget),
     shotsMissed: clampToNonNegative(myTeamStats.shotsMissed),
-    correctPasses: clampToNonNegative(myTeamStats.correctPasses),
-    missedPasses: clampToNonNegative(myTeamStats.missedPasses),
     fouls: clampToNonNegative(myTeamStats.fouls),
   },
   away_stats: {
@@ -310,7 +383,17 @@ const loadSavedGames = async () => {
     return
   }
 
-  savedGames.value = data || []
+  const games = data || []
+  savedGames.value = games.sort((a, b) => {
+    const aHasDateTime = Boolean(a.game_datetime)
+    const bHasDateTime = Boolean(b.game_datetime)
+
+    if (!aHasDateTime && !bHasDateTime) return 0
+    if (!aHasDateTime) return -1
+    if (!bHasDateTime) return 1
+
+    return new Date(b.game_datetime).getTime() - new Date(a.game_datetime).getTime()
+  })
 }
 
 const applySavedGame = (game) => {
@@ -319,8 +402,8 @@ const applySavedGame = (game) => {
   myTeamName.value = game.home_team || 'My team'
   opponentTeamName.value = game.away_team || 'Opponent'
 
-  Object.assign(myTeamStats, createMyTeamStats(), game.home_stats || {})
-  Object.assign(opponentStats, createOpponentStats(), game.away_stats || {})
+  Object.assign(myTeamStats, createMyTeamStats(), sanitizeMyTeamStats(game.home_stats || {}))
+  Object.assign(opponentStats, createOpponentStats(), sanitizeOpponentStats(game.away_stats || {}))
 
   const parsedEvents = Array.isArray(game.score_events) ? game.score_events : []
   scoreEvents.value = parsedEvents.length
@@ -384,6 +467,16 @@ const deleteSavedGame = async (id) => {
   await loadSavedGames()
 }
 
+const requestDeleteSavedGame = (id) => {
+  openConfirmModal({
+    title: 'Delete saved game?',
+    message: 'This action permanently removes the selected game from Supabase.',
+    actionLabel: 'Delete',
+    actionClass: 'danger',
+    onConfirm: () => deleteSavedGame(id),
+  })
+}
+
 onMounted(() => {
   loadSavedGames()
 })
@@ -433,7 +526,10 @@ onMounted(() => {
         <button type="button" :disabled="isSaving || !isSupabaseConfigured" @click="saveGame">
           {{ isSaving ? 'Saving...' : currentGameId ? 'Update Saved Game' : 'Save New Game' }}
         </button>
-        <button type="button" class="secondary" @click="resetForm">Clear Form</button>
+        <button v-if="currentGameId" type="button" class="secondary" @click="resetForm">
+          Create New Game
+        </button>
+        <button type="button" class="danger" @click="requestClearForm">Clear Form</button>
       </div>
 
       <p class="hint" v-if="dbFeedback">{{ dbFeedback }}</p>
@@ -444,7 +540,7 @@ onMounted(() => {
           <p class="saved-meta">{{ formatShortDateTime(game.game_datetime) }}</p>
           <div class="actions-row">
             <button type="button" class="secondary" @click="applySavedGame(game)">Load for Edit</button>
-            <button type="button" class="danger" @click="deleteSavedGame(game.id)">Delete</button>
+            <button type="button" class="danger" @click="requestDeleteSavedGame(game.id)">Delete</button>
           </div>
         </article>
       </div>
@@ -460,14 +556,6 @@ onMounted(() => {
         <article class="team-box">
           <h3>{{ myTeamName || 'My team' }}</h3>
           <div class="stat-grid">
-            <label>
-              Score
-              <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'score', -1)">-</button>
-                <input :value="myTeamStats.score" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'score', 1)">+</button>
-              </div>
-            </label>
             <label>
               Shots On Target
               <div class="counter">
@@ -485,22 +573,6 @@ onMounted(() => {
               </div>
             </label>
             <label>
-              Correct Passes
-              <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'correctPasses', -1)">-</button>
-                <input :value="myTeamStats.correctPasses" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'correctPasses', 1)">+</button>
-              </div>
-            </label>
-            <label>
-              Missed Passes
-              <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'missedPasses', -1)">-</button>
-                <input :value="myTeamStats.missedPasses" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'missedPasses', 1)">+</button>
-              </div>
-            </label>
-            <label>
               Fouls
               <div class="counter">
                 <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'fouls', -1)">-</button>
@@ -508,24 +580,22 @@ onMounted(() => {
                 <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'fouls', 1)">+</button>
               </div>
             </label>
+            <label>
+              Score
+              <div class="counter">
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'score', -1)">-</button>
+                <input :value="myTeamStats.score" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(myTeamStats, 'score', 1)">+</button>
+              </div>
+            </label>
             <p class="stat-text">Shot Attempts: {{ getShotAttempts(myTeamStats) }}</p>
             <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(myTeamStats).toFixed(1) }}%</p>
-            <p class="stat-text">Pass Attempts: {{ getPassAttempts(myTeamStats) }}</p>
-            <p class="stat-text">Pass Accuracy: {{ getPassAccuracy(myTeamStats).toFixed(1) }}%</p>
           </div>
         </article>
 
         <article class="team-box">
           <h3>{{ opponentTeamName || 'Opponent' }}</h3>
           <div class="stat-grid">
-            <label>
-              Score
-              <div class="counter">
-                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'score', -1)">-</button>
-                <input :value="opponentStats.score" disabled type="number" />
-                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'score', 1)">+</button>
-              </div>
-            </label>
             <label>
               Shots On Target
               <div class="counter">
@@ -550,17 +620,30 @@ onMounted(() => {
                 <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'fouls', 1)">+</button>
               </div>
             </label>
+            <label>
+              Score
+              <div class="counter">
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'score', -1)">-</button>
+                <input :value="opponentStats.score" disabled type="number" />
+                <button type="button" class="small secondary" @click="bumpStat(opponentStats, 'score', 1)">+</button>
+              </div>
+            </label>
             <p class="stat-text">Shot Attempts: {{ getShotAttempts(opponentStats) }}</p>
             <p class="stat-text">Shooting Accuracy: {{ getShotAccuracy(opponentStats).toFixed(1) }}%</p>
           </div>
         </article>
+      </div>
+
+      <div class="actions-row">
+        <button type="button" :disabled="isSaving || !isSupabaseConfigured" @click="saveGame">
+          {{ isSaving ? 'Saving...' : currentGameId ? 'Update Saved Game' : 'Save New Game' }}
+        </button>
       </div>
     </section>
 
     <section class="card">
       <div class="section-head">
         <h2>Score Timeline (YouTube Timestamps)</h2>
-        <button type="button" class="secondary" @click="addScoreEvent">Add Timestamp</button>
       </div>
       <p class="hint" v-if="hasScoreMismatch">
         Score check: Team counters show {{ myTeamName || 'My team' }} {{ myTeamStats.score }} - {{ opponentStats.score }} {{ opponentTeamName || 'Opponent' }},
@@ -608,6 +691,16 @@ onMounted(() => {
           </button>
         </article>
       </div>
+
+      <div class="actions-row">
+        <button type="button" class="secondary" @click="addScoreEvent">Add Timestamp</button>
+      </div>
+
+      <div class="actions-row">
+        <button type="button" :disabled="isSaving || !isSupabaseConfigured" @click="saveGame">
+          {{ isSaving ? 'Saving...' : currentGameId ? 'Update Saved Game' : 'Save New Game' }}
+        </button>
+      </div>
     </section>
 
     <section class="card">
@@ -619,5 +712,18 @@ onMounted(() => {
       <textarea :value="youtubeSummary" rows="18" readonly></textarea>
       <p class="copy-feedback" v-if="copyFeedback">{{ copyFeedback }}</p>
     </section>
+
+    <div v-if="isConfirmModalOpen" class="modal-backdrop" @click="closeConfirmModal">
+      <section class="confirm-modal" role="dialog" aria-modal="true" @click.stop>
+        <h3>{{ confirmTitle }}</h3>
+        <p class="hint">{{ confirmMessage }}</p>
+        <div class="actions-row">
+          <button type="button" class="secondary" @click="closeConfirmModal">Cancel</button>
+          <button type="button" :class="confirmActionClass" @click="confirmModalAction">
+            {{ confirmActionLabel }}
+          </button>
+        </div>
+      </section>
+    </div>
   </main>
 </template>
