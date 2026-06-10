@@ -92,6 +92,25 @@ const formatShortDateTime = (value) => {
 
 const clampToNonNegative = (value) => Math.max(0, Number(value) || 0)
 
+const normalizeTeamName = (value, fallback) => {
+  const trimmed = String(value || '').trim()
+  const compact = trimmed.replace(/\s+/g, ' ')
+  const limited = compact.slice(0, 80)
+  return limited || fallback
+}
+
+const normalizeTimestamp = (value) => {
+  const cleaned = String(value || '').trim()
+  if (!cleaned) return ''
+  return /^[0-9]{1,2}:[0-5][0-9]$/.test(cleaned) ? cleaned : ''
+}
+
+const sanitizeScoreEventForPayload = (event) => ({
+  timestamp: normalizeTimestamp(event.timestamp),
+  team: event.team === 'opponent' ? 'away' : 'home',
+  note: String(event.note || '').trim().slice(0, 280),
+})
+
 const getShotAttempts = (stats) =>
   clampToNonNegative(stats.shotsOnTarget) + clampToNonNegative(stats.shotsMissed)
 
@@ -334,8 +353,8 @@ const copySummary = async () => {
 
 const buildPayload = () => ({
   game_datetime: gameDateTime.value || null,
-  home_team: myTeamName.value || 'My team',
-  away_team: opponentTeamName.value || 'Opponent',
+  home_team: normalizeTeamName(myTeamName.value, 'My team'),
+  away_team: normalizeTeamName(opponentTeamName.value, 'Opponent'),
   home_stats: {
     score: clampToNonNegative(myTeamStats.score),
     shotsOnTarget: clampToNonNegative(myTeamStats.shotsOnTarget),
@@ -348,11 +367,7 @@ const buildPayload = () => ({
     shotsMissed: clampToNonNegative(opponentStats.shotsMissed),
     fouls: clampToNonNegative(opponentStats.fouls),
   },
-  score_events: scoreEvents.value.map((event) => ({
-    timestamp: event.timestamp || '',
-    team: event.team === 'opponent' ? 'away' : 'home',
-    note: event.note || '',
-  })),
+  score_events: scoreEvents.value.map(sanitizeScoreEventForPayload),
   youtube_summary: youtubeSummary.value,
 })
 
