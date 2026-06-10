@@ -514,7 +514,7 @@ onMounted(() => {
 
     <section class="card">
       <div class="section-head">
-        <h2>Cloud Save (Supabase)</h2>
+        <h2>Cloud Save</h2>
         <button type="button" class="secondary" @click="loadSavedGames">Refresh List</button>
       </div>
 
