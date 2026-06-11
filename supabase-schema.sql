@@ -19,7 +19,7 @@ as $$
   select
     jsonb_typeof(stats) = 'object'
     and stats ?& array['score', 'shotsOnTarget', 'shotsMissed', 'fouls']
-    and jsonb_object_length(stats) = 4
+    and (select count(*) from jsonb_object_keys(stats)) = 4
     and public.jsonb_uint_between(stats->'score', 0, 99)
     and public.jsonb_uint_between(stats->'shotsOnTarget', 0, 200)
     and public.jsonb_uint_between(stats->'shotsMissed', 0, 200)
@@ -38,7 +38,7 @@ as $$
         select bool_and(
           jsonb_typeof(event) = 'object'
           and event ?& array['timestamp', 'team', 'note']
-          and jsonb_object_length(event) = 3
+          and (select count(*) from jsonb_object_keys(event)) = 3
           and (
             event->>'timestamp' = ''
             or event->>'timestamp' ~ '^[0-9]{1,2}:[0-5][0-9]$'

@@ -7,6 +7,7 @@ const myTeamName = ref('')
 const opponentTeamName = ref('')
 const copyFeedback = ref('')
 const dbFeedback = ref('')
+const validationErrors = ref([])
 const isSaving = ref(false)
 const isLoadingGames = ref(false)
 const currentGameId = ref(null)
@@ -44,6 +45,8 @@ const opponentStats = reactive(createOpponentStats())
 const scoreEvents = ref([createScoreEvent()])
 
 const isSupabaseConfigured = computed(() => Boolean(supabase))
+const TEAM_NAME_MAX_LENGTH = 80
+const TEAM_NAME_PATTERN = /^[A-Za-z0-9]+$/
 
 const parseDateTimeAsEntered = (value) => {
   if (!value) return null
@@ -94,15 +97,21 @@ const clampToNonNegative = (value) => Math.max(0, Number(value) || 0)
 
 const normalizeTeamName = (value, fallback) => {
   const trimmed = String(value || '').trim()
-  const compact = trimmed.replace(/\s+/g, ' ')
-  const limited = compact.slice(0, 80)
-  return limited || fallback
+  return trimmed || fallback
 }
+
+const isValidTeamName = (value) => TEAM_NAME_PATTERN.test(String(value || '').trim())
 
 const normalizeTimestamp = (value) => {
   const cleaned = String(value || '').trim()
   if (!cleaned) return ''
   return /^[0-9]{1,2}:[0-5][0-9]$/.test(cleaned) ? cleaned : ''
+}
+
+const rawTimestampIsValid = (value) => {
+  const cleaned = String(value || '').trim()
+  if (!cleaned) return true
+  return /^[0-9]{1,2}:[0-5][0-9]$/.test(cleaned)
 }
 
 const sanitizeScoreEventForPayload = (event) => ({
@@ -235,6 +244,96 @@ const getEventScoreLabel = (eventId) => {
   return `${myTeamName.value || 'My team'} ${orderedEvent.myTeamScore} - ${orderedEvent.opponentScore} ${opponentTeamName.value || 'Opponent'}`
 }
 
+const mapSupabaseError = (error, action) => {
+  const message = String(error?.message || '').toLowerCase()
+  const details = String(error?.details || '').toLowerCase()
+  const combined = `${message} ${details}`
+
+  if (combined.includes('games_home_team_valid') || combined.includes('games_away_team_valid')) {
+    return 'Team names are required and must be 1 to 80 characters.'
+  }
+
+  if (combined.includes('games_distinct_teams_valid')) {
+    return 'My Team and Opponent Team must be different.'
+  }
+
+  if (combined.includes('games_score_events_valid')) {
+    return 'One or more timeline events are invalid. Use mm:ss timestamps and keep notes under 280 characters.'
+  }
+
+  if (combined.includes('games_home_stats_valid') || combined.includes('games_away_stats_valid')) {
+    return 'Some team statistics are outside allowed limits.'
+  }
+
+  if (combined.includes('games_youtube_summary_length_valid')) {
+    return 'Summary text is too long. Reduce notes or timeline detail.'
+  }
+
+  if (error?.code === '42501') {
+    return 'You do not have permission for this action.'
+  }
+
+  if (error?.code === '23514') {
+    return 'Submitted data did not pass validation rules. Please review your inputs.'
+  }
+
+  if (action === 'load') return 'Could not load saved games right now.'
+  if (action === 'save') return 'Could not save this game right now.'
+  if (action === 'delete') return 'Could not delete this game right now.'
+  return 'Something went wrong while talking to the database.'
+}
+
+const validateBeforeSave = () => {
+  const errors = []
+  const homeTeam = normalizeTeamName(myTeamName.value, '')
+  const awayTeam = normalizeTeamName(opponentTeamName.value, '')
+
+  if (!homeTeam) {
+    errors.push('My Team is required.')
+  } else {
+    if (homeTeam.length > TEAM_NAME_MAX_LENGTH) {
+      errors.push('My Team must be 80 characters or fewer.')
+    }
+
+    if (!isValidTeamName(homeTeam)) {
+      errors.push('My Team can contain letters and numbers only.')
+    }
+  }
+
+  if (!awayTeam) {
+    errors.push('Opponent Team is required.')
+  } else {
+    if (awayTeam.length > TEAM_NAME_MAX_LENGTH) {
+      errors.push('Opponent Team must be 80 characters or fewer.')
+    }
+
+    if (!isValidTeamName(awayTeam)) {
+      errors.push('Opponent Team can contain letters and numbers only.')
+    }
+  }
+
+  if (homeTeam && awayTeam && homeTeam.toLowerCase() === awayTeam.toLowerCase()) {
+    errors.push('My Team and Opponent Team must be different.')
+  }
+
+  if (gameDateTime.value && !parseDateTimeAsEntered(gameDateTime.value)) {
+    errors.push('Game Date & Time is invalid.')
+  }
+
+  scoreEvents.value.forEach((event, index) => {
+    if (!rawTimestampIsValid(event.timestamp)) {
+      errors.push(`Timeline row ${index + 1} has an invalid timestamp. Use mm:ss.`)
+    }
+
+    if (String(event.note || '').trim().length > 280) {
+      errors.push(`Timeline row ${index + 1} note is too long (max 280 characters).`)
+    }
+  })
+
+  validationErrors.value = errors
+  return errors.length === 0
+}
+
 const resetForm = () => {
   gameDateTime.value = ''
   myTeamName.value = ''
@@ -243,6 +342,7 @@ const resetForm = () => {
   Object.assign(myTeamStats, createMyTeamStats())
   Object.assign(opponentStats, createOpponentStats())
   scoreEvents.value = [createScoreEvent()]
+  validationErrors.value = []
   dbFeedback.value = 'Form reset. Ready for a new game.'
 }
 
@@ -394,7 +494,7 @@ const loadSavedGames = async () => {
   isLoadingGames.value = false
 
   if (error) {
-    dbFeedback.value = `Could not load saved games: ${error.message}`
+    dbFeedback.value = mapSupabaseError(error, 'load')
     return
   }
 
@@ -430,6 +530,7 @@ const applySavedGame = (game) => {
       }))
     : [createScoreEvent()]
 
+  validationErrors.value = []
   dbFeedback.value = 'Loaded saved game. You can edit and click Update Saved Game.'
 }
 
@@ -438,6 +539,13 @@ const saveGame = async () => {
     dbFeedback.value = 'Set the Supabase URL and anon key in your .env file to enable cloud save.'
     return
   }
+
+  if (!validateBeforeSave()) {
+    dbFeedback.value = 'Please fix the validation issues and try again.'
+    return
+  }
+
+  validationErrors.value = []
 
   isSaving.value = true
   const wasUpdate = Boolean(currentGameId.value)
@@ -454,7 +562,7 @@ const saveGame = async () => {
   isSaving.value = false
 
   if (error) {
-    dbFeedback.value = `Could not save game: ${error.message}`
+    dbFeedback.value = mapSupabaseError(error, 'save')
     return
   }
 
@@ -470,7 +578,7 @@ const deleteSavedGame = async (id) => {
 
   const { error } = await supabase.from('games').delete().eq('id', id)
   if (error) {
-    dbFeedback.value = `Could not delete game: ${error.message}`
+    dbFeedback.value = mapSupabaseError(error, 'delete')
     return
   }
 
@@ -518,11 +626,11 @@ onMounted(() => {
         <div></div>
         <label>
           My Team
-          <input v-model="myTeamName" type="text" placeholder="My team" />
+          <input v-model="myTeamName" type="text" placeholder="My team" maxlength="80" />
         </label>
         <label>
           Opponent Team
-          <input v-model="opponentTeamName" type="text" placeholder="Opponent" />
+          <input v-model="opponentTeamName" type="text" placeholder="Opponent" maxlength="80" />
         </label>
       </div>
     </section>
@@ -546,6 +654,10 @@ onMounted(() => {
         </button>
         <button type="button" class="danger" @click="requestClearForm">Clear Form</button>
       </div>
+
+      <ul v-if="validationErrors.length" class="error-list">
+        <li v-for="(errorText, index) in validationErrors" :key="index">{{ errorText }}</li>
+      </ul>
 
       <p class="hint" v-if="dbFeedback">{{ dbFeedback }}</p>
 
