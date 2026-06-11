@@ -29,6 +29,27 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 
 6. In Supabase Authentication settings, enable Email/Password sign-in.
 
+## hCaptcha setup (required if CAPTCHA is enabled)
+
+If CAPTCHA protection is enabled in Supabase Auth, you must configure hCaptcha in both Supabase and this app.
+
+1. In hCaptcha, create a site and copy your Site Key and Secret Key.
+2. In Supabase Dashboard, open Authentication settings for CAPTCHA/Bot Detection.
+3. Enable hCaptcha and paste the Site Key and Secret Key.
+4. Add only the public Site Key to your app env:
+
+```bash
+VITE_HCAPTCHA_SITE_KEY=your-hcaptcha-site-key
+```
+
+5. Restart and redeploy the app after updating env values.
+
+Notes:
+
+- The value of `VITE_HCAPTCHA_SITE_KEY` must match the Site Key configured in Supabase.
+- Never put the hCaptcha Secret Key in `VITE_` environment variables. `VITE_` values are bundled into frontend JavaScript.
+- If they do not match, sign-up/sign-in will fail with captcha token errors.
+
 When configured, use the **Cloud Save (Supabase)** section in the app to:
 
 - Sign in or create an account

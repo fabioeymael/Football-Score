@@ -9,8 +9,11 @@ const copyFeedback = ref('')
 const dbFeedback = ref('')
 const validationErrors = ref([])
 const authFeedback = ref('')
+const authDebugMessage = ref('')
 const authEmail = ref('')
 const authPassword = ref('')
+const captchaToken = ref('')
+const hcaptchaContainer = ref(null)
 const isAuthBusy = ref(false)
 const currentUser = ref(null)
 const isSaving = ref(false)
@@ -53,8 +56,15 @@ let authSubscription = null
 const isSupabaseConfigured = computed(() => Boolean(supabase))
 const isAuthenticated = computed(() => Boolean(currentUser.value?.id))
 const currentUserEmail = computed(() => currentUser.value?.email || '')
+const isDev = import.meta.env.DEV
+const rawHcaptchaSiteKey = String(import.meta.env.VITE_HCAPTCHA_SITE_KEY || '').trim()
+const looksLikeHcaptchaSecret = /^ES_/i.test(rawHcaptchaSiteKey)
+const hcaptchaSiteKey = looksLikeHcaptchaSecret ? '' : rawHcaptchaSiteKey
+const isCaptchaEnabled = computed(() => Boolean(hcaptchaSiteKey))
 const TEAM_NAME_MAX_LENGTH = 80
 const TEAM_NAME_PATTERN = /^[A-Za-z0-9]+$/
+
+let hcaptchaWidgetId = null
 
 const parseDateTimeAsEntered = (value) => {
   if (!value) return null
@@ -294,6 +304,16 @@ const mapSupabaseError = (error, action) => {
 const mapAuthError = (error, action) => {
   if (!error) return ''
   const message = String(error.message || '').toLowerCase()
+  const code = String(error.code || '').toLowerCase()
+  const status = Number(error.status || 0)
+
+  if (
+    message.includes('captcha') ||
+    message.includes('captcha_token') ||
+    code.includes('captcha_failed')
+  ) {
+    return 'Auth CAPTCHA is enabled in Supabase. Disable CAPTCHA in Auth settings or add CAPTCHA token support in the app.'
+  }
 
   if (message.includes('invalid login credentials')) {
     return 'Invalid email or password.'
@@ -307,11 +327,88 @@ const mapAuthError = (error, action) => {
     return 'This email is already registered. Try signing in.'
   }
 
+  if (message.includes('signups not allowed')) {
+    return 'Email signups are disabled in Supabase Auth settings.'
+  }
+
+  if (status === 422) {
+    return 'Auth rejected this request (422). Check Supabase Auth settings and verify hCaptcha site key, secret key, and allowed domain (fabioeymael.github.io).'
+  }
+
   if (action === 'sign-up') {
     return 'Could not create account right now.'
   }
 
   return 'Could not sign in right now.'
+}
+
+const setAuthDebugMessage = (error, action) => {
+  if (!isDev) return
+
+  const status = error?.status ?? 'n/a'
+  const code = error?.code || 'n/a'
+  const message = error?.message || 'n/a'
+  authDebugMessage.value = `[${action}] status=${status} code=${code} message=${message}`
+}
+
+const resetCaptcha = () => {
+  captchaToken.value = ''
+
+  if (window.hcaptcha && hcaptchaWidgetId !== null) {
+    window.hcaptcha.reset(hcaptchaWidgetId)
+  }
+}
+
+const loadHcaptchaScript = async () => {
+  if (!isCaptchaEnabled.value) return
+  if (window.hcaptcha) return
+
+  await new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-hcaptcha-sdk="true"]')
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true })
+      existing.addEventListener('error', () => reject(new Error('failed to load hcaptcha')), {
+        once: true,
+      })
+      return
+    }
+
+    const script = document.createElement('script')
+    script.src = 'https://js.hcaptcha.com/1/api.js?render=explicit'
+    script.async = true
+    script.defer = true
+    script.dataset.hcaptchaSdk = 'true'
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error('failed to load hcaptcha'))
+    document.head.appendChild(script)
+  })
+}
+
+const renderHcaptcha = async () => {
+  if (!isCaptchaEnabled.value || !hcaptchaContainer.value) return
+
+  try {
+    await loadHcaptchaScript()
+  } catch {
+    authFeedback.value = 'Could not load hCaptcha. Please refresh and try again.'
+    return
+  }
+
+  if (!window.hcaptcha || hcaptchaWidgetId !== null) return
+
+  hcaptchaWidgetId = window.hcaptcha.render(hcaptchaContainer.value, {
+    sitekey: hcaptchaSiteKey,
+    callback: (token) => {
+      captchaToken.value = token
+    },
+    'expired-callback': () => {
+      captchaToken.value = ''
+    },
+    'error-callback': () => {
+      captchaToken.value = ''
+      authFeedback.value = 'hCaptcha verification failed. Please try again.'
+    },
+  })
 }
 
 const validateAuthForm = () => {
@@ -328,6 +425,11 @@ const validateAuthForm = () => {
     return false
   }
 
+  if (isCaptchaEnabled.value && !captchaToken.value) {
+    authFeedback.value = 'Complete hCaptcha before continuing.'
+    return false
+  }
+
   return true
 }
 
@@ -338,21 +440,35 @@ const signIn = async () => {
   }
 
   if (!validateAuthForm()) return
+  authDebugMessage.value = ''
 
   isAuthBusy.value = true
   const { error } = await supabase.auth.signInWithPassword({
     email: String(authEmail.value).trim(),
     password: String(authPassword.value),
+    options: isCaptchaEnabled.value
+      ? {
+          captchaToken: captchaToken.value,
+        }
+      : undefined,
   })
   isAuthBusy.value = false
 
   if (error) {
     authFeedback.value = mapAuthError(error, 'sign-in')
+    setAuthDebugMessage(error, 'sign-in')
+    if (isCaptchaEnabled.value) {
+      resetCaptcha()
+    }
     return
   }
 
   authFeedback.value = 'Signed in successfully.'
   authPassword.value = ''
+  authDebugMessage.value = ''
+  if (isCaptchaEnabled.value) {
+    resetCaptcha()
+  }
 }
 
 const signUp = async () => {
@@ -362,21 +478,35 @@ const signUp = async () => {
   }
 
   if (!validateAuthForm()) return
+  authDebugMessage.value = ''
 
   isAuthBusy.value = true
   const { error } = await supabase.auth.signUp({
     email: String(authEmail.value).trim(),
     password: String(authPassword.value),
+    options: isCaptchaEnabled.value
+      ? {
+          captchaToken: captchaToken.value,
+        }
+      : undefined,
   })
   isAuthBusy.value = false
 
   if (error) {
     authFeedback.value = mapAuthError(error, 'sign-up')
+    setAuthDebugMessage(error, 'sign-up')
+    if (isCaptchaEnabled.value) {
+      resetCaptcha()
+    }
     return
   }
 
   authFeedback.value = 'Account created. Check your email if confirmation is enabled.'
   authPassword.value = ''
+  authDebugMessage.value = ''
+  if (isCaptchaEnabled.value) {
+    resetCaptcha()
+  }
 }
 
 const signOut = async () => {
@@ -727,6 +857,14 @@ const requestDeleteSavedGame = (id) => {
 onMounted(async () => {
   if (!supabase) return
 
+  if (looksLikeHcaptchaSecret) {
+    authFeedback.value = 'VITE_HCAPTCHA_SITE_KEY looks like an hCaptcha secret key. Use the public site key only.'
+  }
+
+  if (isCaptchaEnabled.value) {
+    await renderHcaptcha()
+  }
+
   const {
     data: { session },
   } = await supabase.auth.getSession()
@@ -753,6 +891,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   authSubscription?.unsubscribe()
+  if (window.hcaptcha && hcaptchaWidgetId !== null) {
+    window.hcaptcha.remove(hcaptchaWidgetId)
+    hcaptchaWidgetId = null
+  }
 })
 </script>
 
@@ -815,6 +957,13 @@ onUnmounted(() => {
             <input v-model="authPassword" type="password" placeholder="At least 8 characters" />
           </label>
         </div>
+        <div v-if="isCaptchaEnabled" class="captcha-wrap">
+          <div ref="hcaptchaContainer"></div>
+        </div>
+        <p v-else-if="looksLikeHcaptchaSecret" class="hint">
+          VITE_HCAPTCHA_SITE_KEY appears to be a secret key. Replace it with the public site key.
+        </p>
+        <p v-else class="hint">Set VITE_HCAPTCHA_SITE_KEY to enable hCaptcha token support.</p>
         <div class="actions-row">
           <button type="button" :disabled="isAuthBusy" @click="signIn">
             {{ isAuthBusy ? 'Working...' : 'Sign In' }}
@@ -831,6 +980,7 @@ onUnmounted(() => {
       </div>
 
       <p class="hint" v-if="authFeedback">{{ authFeedback }}</p>
+      <p class="hint" v-if="authDebugMessage">Debug: {{ authDebugMessage }}</p>
 
       <div class="actions-row">
         <button type="button" :disabled="isSaving || !isSupabaseConfigured || !isAuthenticated" @click="saveGame">
