@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { supabase } from './lib/supabase'
 
 const gameDateTime = ref('')
@@ -8,6 +8,11 @@ const opponentTeamName = ref('')
 const copyFeedback = ref('')
 const dbFeedback = ref('')
 const validationErrors = ref([])
+const authFeedback = ref('')
+const authEmail = ref('')
+const authPassword = ref('')
+const isAuthBusy = ref(false)
+const currentUser = ref(null)
 const isSaving = ref(false)
 const isLoadingGames = ref(false)
 const currentGameId = ref(null)
@@ -43,8 +48,11 @@ const createScoreEvent = () => ({
 const myTeamStats = reactive(createMyTeamStats())
 const opponentStats = reactive(createOpponentStats())
 const scoreEvents = ref([createScoreEvent()])
+let authSubscription = null
 
 const isSupabaseConfigured = computed(() => Boolean(supabase))
+const isAuthenticated = computed(() => Boolean(currentUser.value?.id))
+const currentUserEmail = computed(() => currentUser.value?.email || '')
 const TEAM_NAME_MAX_LENGTH = 80
 const TEAM_NAME_PATTERN = /^[A-Za-z0-9]+$/
 
@@ -283,6 +291,106 @@ const mapSupabaseError = (error, action) => {
   return 'Something went wrong while talking to the database.'
 }
 
+const mapAuthError = (error, action) => {
+  if (!error) return ''
+  const message = String(error.message || '').toLowerCase()
+
+  if (message.includes('invalid login credentials')) {
+    return 'Invalid email or password.'
+  }
+
+  if (message.includes('email not confirmed')) {
+    return 'Please confirm your email before signing in.'
+  }
+
+  if (message.includes('already registered')) {
+    return 'This email is already registered. Try signing in.'
+  }
+
+  if (action === 'sign-up') {
+    return 'Could not create account right now.'
+  }
+
+  return 'Could not sign in right now.'
+}
+
+const validateAuthForm = () => {
+  const email = String(authEmail.value || '').trim()
+  const password = String(authPassword.value || '')
+
+  if (!email || !email.includes('@')) {
+    authFeedback.value = 'Enter a valid email address.'
+    return false
+  }
+
+  if (password.length < 8) {
+    authFeedback.value = 'Password must be at least 8 characters.'
+    return false
+  }
+
+  return true
+}
+
+const signIn = async () => {
+  if (!supabase) {
+    authFeedback.value = 'Supabase is not configured.'
+    return
+  }
+
+  if (!validateAuthForm()) return
+
+  isAuthBusy.value = true
+  const { error } = await supabase.auth.signInWithPassword({
+    email: String(authEmail.value).trim(),
+    password: String(authPassword.value),
+  })
+  isAuthBusy.value = false
+
+  if (error) {
+    authFeedback.value = mapAuthError(error, 'sign-in')
+    return
+  }
+
+  authFeedback.value = 'Signed in successfully.'
+  authPassword.value = ''
+}
+
+const signUp = async () => {
+  if (!supabase) {
+    authFeedback.value = 'Supabase is not configured.'
+    return
+  }
+
+  if (!validateAuthForm()) return
+
+  isAuthBusy.value = true
+  const { error } = await supabase.auth.signUp({
+    email: String(authEmail.value).trim(),
+    password: String(authPassword.value),
+  })
+  isAuthBusy.value = false
+
+  if (error) {
+    authFeedback.value = mapAuthError(error, 'sign-up')
+    return
+  }
+
+  authFeedback.value = 'Account created. Check your email if confirmation is enabled.'
+  authPassword.value = ''
+}
+
+const signOut = async () => {
+  if (!supabase) return
+
+  const { error } = await supabase.auth.signOut()
+  if (error) {
+    authFeedback.value = 'Could not sign out right now.'
+    return
+  }
+
+  authFeedback.value = 'Signed out.'
+}
+
 const validateBeforeSave = () => {
   const errors = []
   const homeTeam = normalizeTeamName(myTeamName.value, '')
@@ -485,6 +593,12 @@ const loadSavedGames = async () => {
     return
   }
 
+  if (!isAuthenticated.value) {
+    savedGames.value = []
+    dbFeedback.value = 'Sign in to load your saved games.'
+    return
+  }
+
   isLoadingGames.value = true
   const { data, error } = await supabase
     .from('games')
@@ -540,6 +654,11 @@ const saveGame = async () => {
     return
   }
 
+  if (!isAuthenticated.value) {
+    dbFeedback.value = 'Sign in to save games to the cloud.'
+    return
+  }
+
   if (!validateBeforeSave()) {
     dbFeedback.value = 'Please fix the validation issues and try again.'
     return
@@ -576,6 +695,11 @@ const deleteSavedGame = async (id) => {
     return
   }
 
+  if (!isAuthenticated.value) {
+    dbFeedback.value = 'Sign in to delete saved games.'
+    return
+  }
+
   const { error } = await supabase.from('games').delete().eq('id', id)
   if (error) {
     dbFeedback.value = mapSupabaseError(error, 'delete')
@@ -600,8 +724,35 @@ const requestDeleteSavedGame = (id) => {
   })
 }
 
-onMounted(() => {
-  loadSavedGames()
+onMounted(async () => {
+  if (!supabase) return
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+
+  currentUser.value = session?.user || null
+  if (currentUser.value) {
+    loadSavedGames()
+  }
+
+  const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    currentUser.value = nextSession?.user || null
+
+    if (currentUser.value) {
+      loadSavedGames()
+      return
+    }
+
+    savedGames.value = []
+    currentGameId.value = null
+  })
+
+  authSubscription = data.subscription
+})
+
+onUnmounted(() => {
+  authSubscription?.unsubscribe()
 })
 </script>
 
@@ -638,15 +789,51 @@ onMounted(() => {
     <section class="card">
       <div class="section-head">
         <h2>Cloud Save</h2>
-        <button type="button" class="secondary" @click="loadSavedGames">Refresh List</button>
+        <button
+          type="button"
+          class="secondary"
+          :disabled="!isSupabaseConfigured || !isAuthenticated"
+          @click="loadSavedGames"
+        >
+          Refresh List
+        </button>
       </div>
 
       <p class="hint" v-if="!isSupabaseConfigured">
         Supabase is not configured yet. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env file.
       </p>
 
+      <div v-else-if="!isAuthenticated" class="auth-box">
+        <p class="hint">Sign in to save, edit, and delete your games.</p>
+        <div class="grid two-col">
+          <label>
+            Email
+            <input v-model="authEmail" type="email" placeholder="name@email.com" />
+          </label>
+          <label>
+            Password
+            <input v-model="authPassword" type="password" placeholder="At least 8 characters" />
+          </label>
+        </div>
+        <div class="actions-row">
+          <button type="button" :disabled="isAuthBusy" @click="signIn">
+            {{ isAuthBusy ? 'Working...' : 'Sign In' }}
+          </button>
+          <button type="button" class="secondary" :disabled="isAuthBusy" @click="signUp">
+            Create Account
+          </button>
+        </div>
+      </div>
+
+      <div v-else class="actions-row">
+        <p class="hint">Signed in as {{ currentUserEmail }}</p>
+        <button type="button" class="secondary" @click="signOut">Sign Out</button>
+      </div>
+
+      <p class="hint" v-if="authFeedback">{{ authFeedback }}</p>
+
       <div class="actions-row">
-        <button type="button" :disabled="isSaving || !isSupabaseConfigured" @click="saveGame">
+        <button type="button" :disabled="isSaving || !isSupabaseConfigured || !isAuthenticated" @click="saveGame">
           {{ isSaving ? 'Saving...' : currentGameId ? 'Update Saved Game' : 'Save New Game' }}
         </button>
         <button v-if="currentGameId" type="button" class="secondary" @click="resetForm">
@@ -762,7 +949,7 @@ onMounted(() => {
       </div>
 
       <div class="actions-row">
-        <button type="button" :disabled="isSaving || !isSupabaseConfigured" @click="saveGame">
+        <button type="button" :disabled="isSaving || !isSupabaseConfigured || !isAuthenticated" @click="saveGame">
           {{ isSaving ? 'Saving...' : currentGameId ? 'Update Saved Game' : 'Save New Game' }}
         </button>
       </div>
@@ -824,7 +1011,7 @@ onMounted(() => {
       </div>
 
       <div class="actions-row">
-        <button type="button" :disabled="isSaving || !isSupabaseConfigured" @click="saveGame">
+        <button type="button" :disabled="isSaving || !isSupabaseConfigured || !isAuthenticated" @click="saveGame">
           {{ isSaving ? 'Saving...' : currentGameId ? 'Update Saved Game' : 'Save New Game' }}
         </button>
       </div>

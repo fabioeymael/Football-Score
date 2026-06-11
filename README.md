@@ -27,12 +27,20 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 
 5. Restart the dev server.
 
+6. In Supabase Authentication settings, enable Email/Password sign-in.
+
 When configured, use the **Cloud Save (Supabase)** section in the app to:
 
+- Sign in or create an account
 - Save New Game
 - Load for Edit
 - Update Saved Game
 - Delete
+
+Security notes:
+
+- Cloud actions now require a signed-in user.
+- Row Level Security policies allow each user to access only their own games.
 
 ## Run locally
 

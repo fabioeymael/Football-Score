@@ -56,6 +56,7 @@ create table if not exists public.games (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  owner_id uuid,
   game_datetime timestamptz,
   home_team text not null,
   away_team text not null,
@@ -64,6 +65,9 @@ create table if not exists public.games (
   score_events jsonb not null default '[]'::jsonb,
   youtube_summary text
 );
+
+alter table public.games
+  add column if not exists owner_id uuid;
 
 alter table public.games
   drop constraint if exists games_home_team_valid,
@@ -100,18 +104,54 @@ begin
 end;
 $$;
 
+create or replace function public.set_games_owner_id()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.owner_id is null then
+    new.owner_id = auth.uid();
+  end if;
+
+  return new;
+end;
+$$;
+
 drop trigger if exists trg_games_updated_at on public.games;
 create trigger trg_games_updated_at
 before update on public.games
 for each row execute function public.set_updated_at();
 
-alter table public.games enable row level security;
+drop trigger if exists trg_games_owner_id on public.games;
+create trigger trg_games_owner_id
+before insert on public.games
+for each row execute function public.set_games_owner_id();
 
--- Demo-friendly open policy for quick start.
--- Change this to authenticated-only rules when needed.
+alter table public.games enable row level security;
+alter table public.games force row level security;
+
+drop policy if exists "Users can read own games" on public.games;
+drop policy if exists "Users can insert own games" on public.games;
+drop policy if exists "Users can update own games" on public.games;
+drop policy if exists "Users can delete own games" on public.games;
 drop policy if exists "Allow all operations on games" on public.games;
-create policy "Allow all operations on games"
+create policy "Users can read own games"
 on public.games
-for all
-using (true)
-with check (true);
+for select
+using (owner_id = auth.uid());
+
+create policy "Users can insert own games"
+on public.games
+for insert
+with check (owner_id = auth.uid());
+
+create policy "Users can update own games"
+on public.games
+for update
+using (owner_id = auth.uid())
+with check (owner_id = auth.uid());
+
+create policy "Users can delete own games"
+on public.games
+for delete
+using (owner_id = auth.uid());
